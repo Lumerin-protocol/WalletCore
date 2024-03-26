@@ -29,6 +29,7 @@ function createPlugin () {
 
     return {
       api: {
+        web3,
         web3Provider: web3.currentProvider,
         web3SubscriptionProvider: web3SubscribAble.currentProvider,
       },

@@ -13,11 +13,12 @@ const createTransactionSyncer = require('./sync-transactions');
 const tryParseEventLog = require('./parse-log');
 const createExplorer = require('./explorer');
 
-function createPlugin () {
+function createPlugin() {
   let blocksStream;
   let syncer;
+  let interval;
 
-  function start ({ config, eventBus, plugins }) {
+  function start({ config, eventBus, plugins }) {
     // debug.enabled = config.debug;
     const { lmrTokenAddress } = config;
 
@@ -29,7 +30,7 @@ function createPlugin () {
     const queue = createQueue(config, eventBus, web3);
     const lumerin = Lumerin(web3Subscribable, lmrTokenAddress);
 
-    const explorer = createExplorer(config.chainId, web3, lumerin, eventBus);
+    const explorer = createExplorer(config.explorerApiURLs, web3, lumerin, eventBus);
 
     syncer = createTransactionSyncer(
       config,
@@ -41,7 +42,10 @@ function createPlugin () {
     );
 
     logger.debug('Initiating blocks stream');
-    blocksStream = createStream(web3Subscribable);
+    const streamData = createStream(web3, config.blocksUpdateMs);
+    blocksStream = streamData.stream;
+    interval = streamData.interval;
+
     blocksStream.on('data', function ({ hash, number, timestamp }) {
       logger.debug('New block', hash, number);
       eventBus.emit('coin-block', { hash, number, timestamp });
@@ -76,9 +80,10 @@ function createPlugin () {
     };
   }
 
-  function stop () {
+  function stop() {
     // blocksStream.destroy();
-    blocksStream.unsubscribe();
+    blocksStream.removeAllListeners();
+    clearInterval(interval);
     syncer.stop();
   }
 

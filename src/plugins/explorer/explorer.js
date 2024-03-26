@@ -4,8 +4,16 @@ const EventEmitter = require('events')
 const pRetry = require('p-retry');
 const { createExplorerApis } = require('./api/factory');
 
-const createExplorer = (chainId, web3, lumerin, eventBus) => {
-  const apis = createExplorerApis(chainId);
+/**
+ * 
+ * @param {string[]} explorerApiURLs 
+ * @param {*} web3 
+ * @param {*} lumerin 
+ * @param {*} eventBus 
+ * @returns 
+ */
+const createExplorer = (explorerApiURLs, web3, lumerin, eventBus) => {
+  const apis = createExplorerApis(explorerApiURLs);
   return new Explorer({ apis, lumerin, web3, eventBus })
 }
 
@@ -114,14 +122,14 @@ class Explorer {
    * @param  {...any} args 
    * @returns {Promise<any>}
    */
-  async invoke(methodName, ...args){
+  async invoke(methodName, ...args) {
     return await pRetry(async () => {
       let lastErr
 
-      for (const api of this.apis){
+      for (const api of this.apis) {
         try {
           return await api[methodName](...args)
-        } catch(err){
+        } catch (err) {
           lastErr = err
         }
       }

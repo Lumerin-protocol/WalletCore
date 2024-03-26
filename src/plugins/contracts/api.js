@@ -3,7 +3,6 @@ const logger = require('../../logger')
 const { encrypt } = require('ecies-geth')
 const { Implementation } = require('contracts-js')
 const { remove0xPrefix, add65BytesPrefix } = require('./helpers')
-const { ContractEventsListener } = require('./events-listener')
 const ethereumWallet = require('ethereumjs-wallet').default
 
 /**
@@ -19,7 +18,7 @@ async function _loadContractInstance(
   try {
     const implementationContract = Implementation(web3, implementationAddress)
     const contract = await implementationContract.methods
-      .getPublicVariables()
+      .getPublicVariablesV2()
       .call()
     const stats = await implementationContract.methods.getStats().call()
 
@@ -39,10 +38,14 @@ async function _loadContractInstance(
 
     const {
       _state: state,
-      _price: price, // cost to purchase the contract
-      _limit: limit, // max th provided
-      _speed: speed, // th/s of contract
-      _length: length, // duration of the contract in seconds
+      _terms: {
+        _price: price, // cost to purchase the contract
+        _limit: limit, // max th provided
+        _speed: speed, // th/s of contract
+        _length: length, // duration of the contract in seconds
+        _version: version,
+        _profitTarget: profitTarget
+      }, 
       _startingBlockTimestamp: timestamp, // timestamp of the block at moment of purchase
       _buyer: buyer, // wallet address of the purchasing party
       _seller: seller, // wallet address of the selling party
@@ -60,6 +63,8 @@ async function _loadContractInstance(
         speed: data._speed,
         length: data._length,
         limit: data._limit,
+        version: data._version,
+        profitTarget: data._profitTarget
       }
     }
 
@@ -84,9 +89,12 @@ async function _loadContractInstance(
         hasFutureTerms,
         futureTerms,
         history: buyerHistory,
+        version,
+        profitTarget
       },
     }
   } catch (err) {
+    logger.error(err)
     logger.error(
       'Error when trying to load Contracts by address in the Implementation contract: ',
       err
@@ -96,83 +104,30 @@ async function _loadContractInstance(
 }
 
 /**
- * @param {import('web3').default} web3
- * @param {import('web3').default} web3Subscriptionable
- * @param {import('contracts-js').LumerinContext} lumerin
  * @param {import('contracts-js').CloneFactoryContext} cloneFactory
- * @param {string[]} addresses
- * @param {string} walletAddress
  */
-async function getContracts(
-  web3,
-  web3Subscriptionable,
-  lumerin,
-  cloneFactory,
-  addresses,
-  walletAddress
-) {
-  return Promise.all(
-    addresses.map((address) =>
-      getContract(
-        web3,
-        web3Subscriptionable,
-        lumerin,
-        cloneFactory,
-        address,
-        walletAddress
-      )
-    )
-  )
-}
-
-/**
- * @param {import('web3').default} web3
- * @param {import('web3').default} web3Subscriptionable
- * @param {import('contracts-js').LumerinContext} lumerin
- * @param {string} contractId
- * @param {string} walletAddress
- */
-async function getContract(
-  web3,
-  web3Subscriptionable,
-  lumerin,
-  cloneFactory,
-  contractId,
-  walletAddress
-) {
-  const contractEventsListener = ContractEventsListener.getInstance()
-  const contractInfo = await _loadContractInstance(
-    web3,
-    contractId,
-    walletAddress
-  )
-
-  contractEventsListener.addContract(
-    contractInfo.data.id,
-    Implementation(web3Subscriptionable, contractId),
-    walletAddress
-  )
-  return contractInfo.data
+const getMarketplaceFee = (cloneFactory) => async () => {
+  return await cloneFactory.methods.marketplaceFee().call()
 }
 
 /**
  * @param {import('web3').default} web3
  * @param {import('contracts-js').CloneFactoryContext} cloneFactory
  */
-function createContract(web3, cloneFactory, plugins) {
+function createContract(web3, cloneFactory) {
   if (!web3) {
     logger.error('Not a valid Web3 instance')
     return
   }
 
   return async function (params) {
-    // const { gasPrice } = await plugins.wallet.getGasPrice()
     let {
       price,
       limit = 0,
       speed,
       duration,
       sellerAddress,
+      profit = 0,
       validatorAddress = '0x0000000000000000000000000000000000000000',
       privateKey,
     } = params
@@ -191,37 +146,41 @@ function createContract(web3, cloneFactory, plugins) {
 
     const account = web3.eth.accounts.privateKeyToAccount(privateKey)
     web3.eth.accounts.wallet.create(0).add(account)
+    const marketplaceFee = await cloneFactory.methods.marketplaceFee().call()
 
     const gas = await cloneFactory.methods
-      .setCreateNewRentalContract(
+      .setCreateNewRentalContractV2(
         price,
         limit,
         speed,
         duration,
+        +profit,
         validatorAddress,
         pubKey.toString('hex')
       )
       .estimateGas({
         from: sellerAddress,
+        value: marketplaceFee,
       })
 
     return cloneFactory.methods
-      .setCreateNewRentalContract(
+      .setCreateNewRentalContractV2(
         price,
         limit,
         speed,
         duration,
+        +profit,
         validatorAddress,
         pubKey.toString('hex')
       )
-      .send({ from: sellerAddress, gas })
+      .send({ from: sellerAddress, gas, value: marketplaceFee })
   }
 }
 
 /**
  * @param {import('web3').default} web3
  */
-function cancelContract(web3) {
+function cancelContract(web3, cloneFactory) {
   if (!web3) {
     logger.error('Not a valid Web3 instance')
     return
@@ -230,7 +189,6 @@ function cancelContract(web3) {
   return async function (params) {
     const {
       walletAddress,
-      gasLimit = 1000000,
       contractId,
       privateKey,
       closeOutType,
@@ -239,10 +197,13 @@ function cancelContract(web3) {
     const account = web3.eth.accounts.privateKeyToAccount(privateKey)
     web3.eth.accounts.wallet.create(0).add(account)
 
+    const marketplaceFee = await cloneFactory.methods.marketplaceFee().call()
+
     const gas = await Implementation(web3, contractId)
       .methods.setContractCloseOut(closeOutType)
       .estimateGas({
         from: walletAddress,
+        value: marketplaceFee,
       })
 
     return await Implementation(web3, contractId)
@@ -250,6 +211,7 @@ function cancelContract(web3) {
       .send({
         from: walletAddress,
         gas,
+        value: marketplaceFee,
       })
   }
 }
@@ -267,7 +229,6 @@ function setContractDeleteStatus(web3, cloneFactory, onUpdate) {
   return async function (params) {
     const {
       walletAddress,
-      gasLimit = 3000000,
       contractId,
       privateKey,
       deleteContract,
@@ -295,9 +256,6 @@ function setContractDeleteStatus(web3, cloneFactory, onUpdate) {
         from: walletAddress,
         gas,
       })
-    onUpdate(contractId, walletAddress).catch((err) =>
-      logger.error(`Failed to refresh after setContractDeadStatus: ${err}`)
-    )
     return result
   }
 }
@@ -311,8 +269,8 @@ function setContractDeleteStatus(web3, cloneFactory, onUpdate) {
  */
 function purchaseContract(web3, cloneFactory, lumerin) {
   return async (params) => {
-    const { walletId, contractId, url, privateKey, price } = params
-    const sendOptions = { from: walletId, gas: 1_000_000 }
+    const { walletId, contractId, url, privateKey, price, version } = params
+    const sendOptions = { from: walletId }
 
     //getting pubkey from contract to be purchased
     const implementationContract = Implementation(web3, contractId)
@@ -335,23 +293,42 @@ function purchaseContract(web3, cloneFactory, lumerin) {
       throw new Error('Contract is deleted already')
     }
 
-    const totalPrice = (+price + price * 0.01).toString()
+    const increaseAllowanceEstimate = await lumerin.methods
+      .increaseAllowance(cloneFactory.options.address, price)
+      .estimateGas({
+        from: walletId,
+      })
 
     await lumerin.methods
-      .increaseAllowance(cloneFactory.options.address, totalPrice)
-      .send(sendOptions)
+      .increaseAllowance(cloneFactory.options.address, price)
+      .send({
+        from: walletId,
+        gas: increaseAllowanceEstimate,
+      })
+
+    const marketplaceFee = await cloneFactory.methods.marketplaceFee().call()
 
     const purchaseGas = await cloneFactory.methods
-      .setPurchaseRentalContract(contractId, ciphertext.toString('hex'))
+      .setPurchaseRentalContract(
+        contractId,
+        ciphertext.toString('hex'),
+        version
+      )
       .estimateGas({
         from: sendOptions.from,
+        value: marketplaceFee,
       })
 
     const purchaseResult = await cloneFactory.methods
-      .setPurchaseRentalContract(contractId, ciphertext.toString('hex'))
+      .setPurchaseRentalContract(
+        contractId,
+        ciphertext.toString('hex'),
+        version
+      )
       .send({
         ...sendOptions,
         gas: purchaseGas,
+        value: marketplaceFee,
       })
 
     logger.debug('Finished puchase transaction', purchaseResult)
@@ -375,20 +352,21 @@ function editContract(web3, cloneFactory, lumerin) {
       limit = 0,
       speed,
       duration,
+      profit = 0
     } = params
-    const sendOptions = { from: walletId, gas: 1_000_000 }
+    const sendOptions = { from: walletId }
 
     const account = web3.eth.accounts.privateKeyToAccount(privateKey)
     web3.eth.accounts.wallet.create(0).add(account)
 
     const editGas = await cloneFactory.methods
-      .setUpdateContractInformation(contractId, price, limit, speed, duration)
+      .setUpdateContractInformationV2(contractId, price, limit, speed, duration, +profit)
       .estimateGas({
         from: sendOptions.from,
-      })
-
+      });
+      
     const editResult = await cloneFactory.methods
-      .setUpdateContractInformation(contractId, price, limit, speed, duration)
+      .setUpdateContractInformationV2(contractId, price, limit, speed, duration, +profit)
       .send({
         ...sendOptions,
         gas: editGas,
@@ -399,11 +377,10 @@ function editContract(web3, cloneFactory, lumerin) {
 }
 
 module.exports = {
-  getContracts,
-  getContract,
   createContract,
   cancelContract,
   purchaseContract,
   setContractDeleteStatus,
   editContract,
+  getMarketplaceFee,
 }

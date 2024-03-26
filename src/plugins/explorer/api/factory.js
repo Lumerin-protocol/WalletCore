@@ -1,30 +1,14 @@
-const { createArbiscanApi } = require('./arbiscan-factory')
-const { createBlockscoutApi } = require('./blockscout-factory')
-const { createEtherscanApi } = require('./etherscan-factory')
+const { BlockscoutApi } = require('./blockscout-api')
+const { EtherscanApi } = require('./etherscan-api')
 
-const createExplorerApis = (chainId) => {
-  const apis = []
-
-  switch (chainId.toString()) {
-    case 'mainnet':
-    case '1':
-    case 'goerli':
-    case '5':
-    case 'sepolia':
-    case '11155111':
-      const etherscanApi = createEtherscanApi(chainId)
-      const blockscoutApi = createBlockscoutApi(chainId)
-      apis.push(etherscanApi, blockscoutApi)
-      break;
-    case '421613':
-      const arbiscanApi = createArbiscanApi(chainId)
-      apis.push(arbiscanApi)
-      break
-    default:
-      throw new Error(`Unsupported chain ${chainId}`)
-  }
-
-  return apis;
+/**
+ * @param {string[]} explorerApiURLs 
+ */
+const createExplorerApis = (explorerApiURLs) => {
+  return explorerApiURLs.map(baseURL => {
+    const isBlockscoutApi = baseURL.includes('blockscout')
+    return isBlockscoutApi ? new BlockscoutApi({ baseURL }) : new EtherscanApi({ baseURL })
+  })
 }
 
 module.exports = { createExplorerApis }

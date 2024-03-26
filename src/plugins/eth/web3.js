@@ -3,31 +3,13 @@
 const logger = require('../../logger');
 
 const Web3 = require('web3')
-const https = require('https')
+const { Web3Http } = require('./web3Http');
 
-let providers = [];
 
 function createWeb3(config) {
   // debug.enabled = config.debug
 
-  providers = config.httpApiUrls.map((url) => {
-    return new Web3.providers.HttpProvider(url, {
-      agent: new https.Agent({
-        rejectUnauthorized: false, // Set to false if your HTTPS node endpoint uses a self-signed certificate
-      }),
-    })
-  })
-
-  const web3 = new Web3(providers[0], {
-    agent: new https.Agent({
-      rejectUnauthorized: false, // Set to false if your HTTPS node endpoint uses a self-signed certificate
-    }),
-  })
-
-  overrideFunctions(web3, providers)
-  overrideFunctions(web3.eth, providers)
-  web3.subscriptionProvider = subscriptionProvider
-
+  const web3 = new Web3Http(config.httpApiUrls)
   return web3
 }
 
@@ -66,73 +48,8 @@ function createWeb3Subscribable(config, eventBus) {
 }
 
 function destroyWeb3(web3) {
-  web3.currentProvider.disconnect()
+  web3.currentProvider?.disconnect()
 }
-
-const urls = [
-  process.env.HTTP_ETH_NODE_ADDRESS,
-  process.env.HTTP_ETH_NODE_ADDRESS2,
-  process.env.HTTP_ETH_NODE_ADDRESS3,
-]
-
-let lastUsedProviderIndex = -1
-
-const overrideFunctions = function (object, providers) {
-  const originalSetProvider = object.setProvider
-
-  const originalFunctions = Object.assign({}, object)
-  Object.keys(originalFunctions).forEach((key) => {
-    if (
-      typeof originalFunctions[key] === 'function' &&
-      !key.startsWith('set')
-    ) {
-      object[key] = function () {
-        const isAsync =
-          originalFunctions[key][Symbol.toStringTag] === 'AsyncFunction'
-        const args = arguments
-        let providerIndex = lastUsedProviderIndex
-        let result
-        do {
-          providerIndex = (providerIndex + 1) % providers.length
-          const provider = providers[providerIndex]
-          originalSetProvider(provider)
-          if (isAsync) {
-            result = originalFunctions[key]
-              .apply(this, args)
-              .then((res) => {
-                if (res !== undefined) {
-                  return res
-                }
-                throw new Error('Result is undefined')
-              })
-              .catch((error) => {
-                console.error(`Error with provider ${provider.host}:`, error)
-                throw error
-              })
-          } else {
-            try {
-              result = originalFunctions[key].apply(this, args)
-              if (result !== undefined) {
-                break
-              }
-            } catch (error) {
-              console.error(`Error with provider ${provider.host}:`, error)
-            }
-          }
-        } while (providerIndex !== lastUsedProviderIndex)
-        lastUsedProviderIndex = providerIndex
-        if (result === undefined) {
-          throw new Error('All providers failed to execute the function')
-        }
-        return result
-      }
-    }
-  })
-
-  object.setProvider = originalSetProvider
-}
-
-let subscriptionProvider
 
 module.exports = {
   createWeb3,
